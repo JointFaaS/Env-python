@@ -26,18 +26,18 @@ def clientSocket():
     sock.connect(UNIX_SOCK_PIPE_PATH)
 
     # register the env into Worker
-    register()
+    register(sock)
 
     # start working
     t = threading.Thread(target=onMessageReceived, args=(sock,))
     t.start()
-    t.wait()
+    t.join()
 
 
 # Send request to server, you can define your own proxy
 # conn: conn handler
 def sendRequest(sock, callID, data):
-    header = callID.to_bytes(8) + len(data).to_bytes(8, byteorder="big")
+    header = callID.to_bytes(8, byteorder="big") + len(data).to_bytes(8, byteorder="big")
     sock.sendall(header+data)
 
 
@@ -51,6 +51,7 @@ def onMessageReceived(sock):
 
 # Parse request of unix socket
 # conn: conn handler
+# TODO: err handle
 def parseResponse(sock):
     callID = sock.recv(8)
     lenStr = sock.recv(8)
