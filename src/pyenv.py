@@ -1,4 +1,0 @@
-
-
-def invoke(data):
-    return ""

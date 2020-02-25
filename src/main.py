@@ -2,8 +2,7 @@ import socket
 import os
 import threading
 import json
-from pyenv import invoke
-
+import sys
 
 UNIX_SOCK_PIPE_PATH = "/var/run/worker.sock"
 
@@ -44,8 +43,8 @@ def sendRequest(sock, callID, data):
 def onMessageReceived(sock):
     while True:
         callID, data = parseResponse(sock)
-        res = invoke(data)
-        sendRequest(sock, callID, res)
+        res = index.handler(data)
+        sendRequest(sock, callID, str.encode(json.dumps(res)))
     #   break
 
 
@@ -54,11 +53,14 @@ def onMessageReceived(sock):
 # TODO: err handle
 def parseResponse(sock):
     callID = sock.recv(8)
-    lenStr = sock.recv(8)
-    length = int.from_bytes(lenStr, byteorder="big")
+    length = sock.recv(8)
+    length = int.from_bytes(length, byteorder="big")
+    callID = int.from_bytes(callID, byteorder="big")
     data = sock.recv(length)
     return callID, data
 
 
 if __name__ == "__main__":
+    sys.path.append("/tmp/code/") 
+    import index
     clientSocket()
