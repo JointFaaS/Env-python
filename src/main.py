@@ -1,72 +1,40 @@
-import socket
 import os
-import threading
 import json
 import sys
 import zipfile
+import grpc
+import logging
+from concurrent import futures
 
-UNIX_SOCK_PIPE_PATH = "/var/run/worker.sock"
+from container import container_pb2
+from container import container_pb2_grpc
 
-def register(sock):
-    msg = {}
-    msg['funcName'] = os.getenv('funcName')
-    msg['envID'] = os.getenv('envID')
-    sendRequest(sock, 0, str.encode(json.dumps(msg)))
+class ContainerSever(container_pb2_grpc.ContainerServicer):
+    def Invoke(self, request, context: grpc.RpcContext):
+        return container_pb2.InvokeResponse(code=0, )
+    
+    def SetEnvs(self, request, context):
+        pass
 
+    def LoadCode(self, request, context):
+        zf = zipfile.ZipFile("/tmp/code/source")
+        try:
+            zf.extractall(path="/tmp/code")
+        except RuntimeError as e:
+            print(e)
 
-def clientSocket():
-    # crate socket
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    if sock == 0:
-        print('socket create error')
+    def Stop(self, request, context):
         return
 
-    # connect server
-    sock.connect(UNIX_SOCK_PIPE_PATH)
-
-    # register the env into Worker
-    register(sock)
-
-    # start working
-    t = threading.Thread(target=onMessageReceived, args=(sock,))
-    t.start()
-    t.join()
+def serve():
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    container_pb2_grpc.add_ContainerServicer_to_server(
+        ContainerSever(), server)
+    server.add_insecure_port('[::]:50051')
+    server.start()
+    server.wait_for_termination()
 
 
-# Send request to server, you can define your own proxy
-# conn: conn handler
-def sendRequest(sock, callID, data):
-    header = callID.to_bytes(8, byteorder="big") + len(data).to_bytes(8, byteorder="big")
-    sock.sendall(header+data)
-
-
-def onMessageReceived(sock):
-    while True:
-        callID, data = parseResponse(sock)
-        res = index.handler(data)
-        sendRequest(sock, callID, str.encode(json.dumps(res)))
-    #   break
-
-
-# Parse request of unix socket
-# conn: conn handler
-# TODO: err handle
-def parseResponse(sock):
-    callID = sock.recv(8)
-    length = sock.recv(8)
-    length = int.from_bytes(length, byteorder="big")
-    callID = int.from_bytes(callID, byteorder="big")
-    data = sock.recv(length)
-    return callID, data
-
-
-if __name__ == "__main__":
-    sys.path.append("/tmp/code/")
-    zf = zipfile.ZipFile("/tmp/code/source")
-    try:
-        zf.extractall(path="/tmp/code")
-    except RuntimeError as e:
-        print(e)
-    zf.close()
-    import index
-    clientSocket()
+if __name__ == '__main__':
+    logging.basicConfig()
+    serve()
