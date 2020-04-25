@@ -3,9 +3,9 @@ import os
 import threading
 import json
 import sys
+import zipfile
 
 UNIX_SOCK_PIPE_PATH = "/var/run/worker.sock"
-
 
 def register(sock):
     msg = {}
@@ -61,6 +61,12 @@ def parseResponse(sock):
 
 
 if __name__ == "__main__":
-    sys.path.append("/tmp/code/") 
+    sys.path.append("/tmp/code/")
+    zf = zipfile.ZipFile("/tmp/code/source")
+    try:
+        zf.extractall(path="/tmp/code")
+    except RuntimeError as e:
+        print(e)
+    zf.close()
     import index
     clientSocket()
