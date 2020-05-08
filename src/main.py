@@ -51,8 +51,8 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
 
     def LoadCode(self, request, context):
         with self.loadCodeLock:
-            r = requests.get(request.url)
             try:
+                r = requests.get(request.url)
                 d = tempfile.mkdtemp('', '', '/tmp')
                 with open(d + "/func" , "wb") as code:
                     code.write(r.content)
@@ -69,9 +69,10 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
                 # TODO: unlink the last directory
                 self.d = d
                 self.funcName = request.funcName
-                return
+                return container_pb2.LoadCodeResponse(code=0)
             except RuntimeError as e:
                 print(e)
+                return container_pb2.LoadCodeResponse(code=1)
 
     def Stop(self, request, context):
         return
