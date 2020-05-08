@@ -32,6 +32,12 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
                 return container_pb2.InvokeResponse(code=2)
 
             output = self.func.handler(request.payload)
+            if isinstance(output, bytes):
+                pass
+            elif isinstance(output, str):
+                output = bytes(output, encoding='utf8')
+            else:
+                return container_pb2.InvokeResponse(code=3)
             return container_pb2.InvokeResponse(code=0, output=output)
         except Exception as e:
             logging.warn(e)
