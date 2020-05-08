@@ -12,7 +12,7 @@ if __name__ == "__main__":
     ))
     print(res)
     res = stub.Invoke(container_pb2.InvokeRequest(
-        funcname='test',
+        funcName='test',
         payload=bytes('hello', encoding = "utf8")
     ))
     print(res)
