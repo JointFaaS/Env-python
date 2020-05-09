@@ -12,14 +12,12 @@ from importlib import reload
 
 from concurrent import futures
 
-from container import container_pb2
-from container import container_pb2_grpc
-
+from container import container_pb2, container_pb2_grpc
+from worker import worker_pb2, worker_pb2_grpc
 class ContainerSever(container_pb2_grpc.ContainerServicer):
     def __init__(self):
         super().__init__()
         self.loadCodeLock = threading.Lock()
-        os.environ.setdefault('FUNC_NAME', '')
         self.funcName = os.environ['FUNC_NAME']
         self.func = None
         self.d = None
@@ -83,12 +81,30 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
     def Stop(self, request, context):
         return
 
+def readAddr():
+    with open('/etc/hosts') as hosts:
+        return hosts.readlines[-1].split('\t')[0]
+
+def registerToWorker():
+    channel = grpc.insecure_channel(os.environ['WORK_HOST'])
+    stub = worker_pb2_grpc.WorkerStub(channel)
+    res = stub.Register(worker_pb2.RegisterRequest(
+        id='undefined',
+        addr=readAddr() + ':50051',
+        runtime=os.environ['RUNTIME'],
+        funcName=os.environ['FUNC_NAME'],
+        memory=int(os.environ['MEMORY']),
+        disk=0,
+    ))
+
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     container_pb2_grpc.add_ContainerServicer_to_server(
         ContainerSever(), server)
     server.add_insecure_port('[::]:50051')
     server.start()
+    # TODO: need wait_for_ready?
+    registerToWorker()
     server.wait_for_termination()
 
 if __name__ == '__main__':
