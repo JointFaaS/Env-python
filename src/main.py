@@ -83,7 +83,7 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
 
 def readAddr():
     with open('/etc/hosts') as hosts:
-        return hosts.readlines[-1].split('\t')[0]
+        return hosts.readlines()[-1].split('\t')[0]
 
 def registerToWorker():
     channel = grpc.insecure_channel(os.environ['WORK_HOST'])
