@@ -9,8 +9,9 @@ import threading
 import tempfile
 import importlib.util
 from importlib import reload
-
+import json
 from concurrent import futures
+import traceback
 
 from container import container_pb2, container_pb2_grpc
 from worker import worker_pb2, worker_pb2_grpc
@@ -29,18 +30,33 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
             elif self.funcName != request.funcName:
                 return container_pb2.InvokeResponse(code=2)
 
-            output = self.func.handler(request.payload)
+            payload = json.loads(request.payload.decode("utf-8"))  
+            # TODO: This is not the final version to import the code path
+            print("tmp path: " + self.d)
+            output = self.func.handler(payload)
+            
             if isinstance(output, bytes):
                 pass
             elif isinstance(output, str):
                 output = bytes(output, encoding='utf8')
+            elif isinstance(output, dict):
+                output = bytes(json.dumps(output), encoding='utf8')
             else:
                 return container_pb2.InvokeResponse(code=3)
+            print("output is: ")
+            print(output)
             return container_pb2.InvokeResponse(code=0, output=output)
         except Exception as e:
             logging.warn(e)
+            traceback.print_exc()
             return container_pb2.InvokeResponse(code=3)
-    
+        
+        except ValueError as e:
+            logging.warn(e)
+            traceback.print_exc()
+            print("[DEBUG] get here")
+            return container_pb2.InvokeResponse(code=3)
+         
     def SetEnvs(self, request, context):
         try:
             for env in request.env:
@@ -54,6 +70,7 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
         return container_pb2.SetEnvsResponse(code=0)
 
     def LoadCode(self, request, context):
+        print("[liu] start to load code")
         with self.loadCodeLock:
             try:
                 r = requests.get(request.url)
@@ -73,6 +90,7 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
                 # TODO: unlink the last directory
                 self.d = d
                 self.funcName = request.funcName
+                os.environ['FC_FUNC_CODE_PATH'] = d
                 return container_pb2.LoadCodeResponse(code=0)
             except RuntimeError as e:
                 print(e)
