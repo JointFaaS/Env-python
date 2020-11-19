@@ -15,6 +15,8 @@ import traceback
 
 from container import container_pb2, container_pb2_grpc
 from worker import worker_pb2, worker_pb2_grpc
+
+
 class ContainerSever(container_pb2_grpc.ContainerServicer):
     def __init__(self):
         super().__init__()
@@ -56,7 +58,6 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
             traceback.print_exc()
             print("[DEBUG] get here")
             return container_pb2.InvokeResponse(code=3)
-         
     def SetEnvs(self, request, context):
         try:
             for env in request.env:
@@ -75,7 +76,7 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
             try:
                 r = requests.get(request.url)
                 d = tempfile.mkdtemp('', '', '/tmp')
-                with open(d + "/func" , "wb") as code:
+                with open(d + "/func", "wb") as code:
                     code.write(r.content)
                 zf = zipfile.ZipFile(d + "/func")
                 zf.extractall(path=d)
@@ -99,21 +100,27 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
     def Stop(self, request, context):
         return
 
+
 def readAddr():
     with open('/etc/hosts') as hosts:
         return hosts.readlines()[-1].split('\t')[0]
+
+def readId():
+    with open('/etc/hosts') as hosts:
+        return hosts.readlines()[-1].replace('\n','').replace('\r','').split('\t')[1]
 
 def registerToWorker():
     channel = grpc.insecure_channel(os.environ['WORK_HOST'])
     stub = worker_pb2_grpc.WorkerStub(channel)
     res = stub.Register(worker_pb2.RegisterRequest(
-        id='undefined',
+        id=readId(),
         addr=readAddr() + ':50051',
         runtime=os.environ['RUNTIME'],
         funcName=os.environ['FUNC_NAME'],
         memory=int(os.environ['MEMORY']),
         disk=0,
     ))
+
 
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
@@ -124,6 +131,7 @@ def serve():
     # TODO: need wait_for_ready?
     registerToWorker()
     server.wait_for_termination()
+
 
 if __name__ == '__main__':
     logging.basicConfig()
