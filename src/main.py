@@ -1,3 +1,4 @@
+import _thread
 import os
 import json
 import sys
@@ -16,6 +17,7 @@ import traceback
 from container import container_pb2, container_pb2_grpc
 from worker import worker_pb2, worker_pb2_grpc
 
+import mesh
 
 class ContainerSever(container_pb2_grpc.ContainerServicer):
     def __init__(self):
@@ -91,7 +93,9 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
                 # TODO: unlink the last directory
                 self.d = d
                 self.funcName = request.funcName
+                os.environ['FUNC_NAME'] = request.funcName
                 os.environ['FC_FUNC_CODE_PATH'] = d
+                mesh.init_mesh()
                 return container_pb2.LoadCodeResponse(code=0)
             except RuntimeError as e:
                 print(e)
@@ -99,7 +103,6 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
 
     def Stop(self, request, context):
         return
-
 
 def readAddr():
     with open('/etc/hosts') as hosts:
@@ -114,18 +117,17 @@ def registerToWorker():
     stub = worker_pb2_grpc.WorkerStub(channel)
     res = stub.Register(worker_pb2.RegisterRequest(
         id=readId(),
-        addr=readAddr() + ':50051',
+        addr=readAddr(),
         runtime=os.environ['RUNTIME'],
         funcName=os.environ['FUNC_NAME'],
         memory=int(os.environ['MEMORY']),
         disk=0,
     ))
 
-
 def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     container_pb2_grpc.add_ContainerServicer_to_server(
-        ContainerSever(), server)
+    ContainerSever(), server)
     server.add_insecure_port('[::]:50051')
     server.start()
     # TODO: need wait_for_ready?
@@ -134,5 +136,5 @@ def serve():
 
 
 if __name__ == '__main__':
-    logging.basicConfig()
+    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
     serve()
