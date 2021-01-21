@@ -8,17 +8,30 @@ import discovery.model_pb2 as  model_pb2
 from google.protobuf.json_format import MessageToJson
 import queue
 import os
+import time
 import copy
 import random
 import requests
 import tracer
 import importlib.util
 from importlib import reload
+import threading
 
+import tornado
 import tornado.web
 from tornado.web import RequestHandler
 from tornado.escape import json_decode
 from opentracing import Format
+
+from prometheus_client.exposition import choose_encoder
+from prometheus_client import CollectorRegistry, Gauge
+
+
+UNDEFIEND = 0
+NONE = 1
+OK = 2
+
+app = None
 
 def is_mesh_init_over(mesh_config):
     return mesh_config.get("functions", None) != None
@@ -37,6 +50,7 @@ def is_first(mesh_config):
     return application.stepChains[0].functionName == self_name
         
 def simple_policy(func) :
+    global OK, UNDEFIEND, NONE
     infos = func["infos"]
     provider = os.getenv("PROVIDER")
     logging.info("provider:" + provider)
@@ -49,10 +63,10 @@ def simple_policy(func) :
             info = infos[provider]
             logging.info("info.instances:" + str(info["instances"]))
             if info["instances"] != None and len(info["instances"]) > 0:
-                return {
+                return ({
                     "url":random.sample(info["instances"], 1)[0] + "/invoke",
                     "method": func["method"]
-                    }
+                    }, OK)
         else:
             # choose the first one
             for key in infos.keys():
@@ -60,25 +74,26 @@ def simple_policy(func) :
                 break
         if info == None:
             logging.info("final info:" + str(info))
-            return None
+            return (None, UNDEFIEND)
         chosen_url = info["url"]
         method = func["method"]
-        return {"url": chosen_url, "method": method}
+        return ({"url": chosen_url, "method": method}, OK)
     else:
         logging.info("infos is NONE")
-        return None
-    return None
+        return (None, UNDEFIEND)
+    return (None, NONE)
 
 policies = {
     "simple": simple_policy
 }
 
 def get_callee(mesh_config):
+    global OK, UNDEFIEND, NONE
     application = mesh_config.get("application", None)
     logging.info("get_callee:" + str(mesh_config))
     if application == None:
         logging.info('["callee -1"]')
-        return None
+        return (None, UNDEFIEND)
     steps = application.stepChains
     self_name = os.getenv("FUNC_NAME")
     callee = None
@@ -91,18 +106,18 @@ def get_callee(mesh_config):
                 logging.info('["callee 0"]')
                 logging.info("self name:" + self_name)
                 logging.info("steps:" + str(steps))
-                return None
+                return (None,NONE)
     if callee == None:
         logging.info('["callee 1"]')
-        return callee
+        return (callee, NONE)
     functions = mesh_config.get("functions", None)
     if functions == None:
         logging.info('["callee 2"]')
-        return None
+        return (None, UNDEFIEND)
     callee_func = functions.get(callee, None)
     if callee_func == None:
         logging.info('["callee 3"]')
-        return None
+        return (None, UNDEFIEND)
     logging.info("callee functions:" + str(functions))
     chosen_policy = os.getenv("POLICY")
     global policies
@@ -200,6 +215,7 @@ def get_data(opts, data) :
     return ""
 
 def start_http_invoke():
+    global app
     app = Application()
     logging.info("torando start 1")
     httpServer = tornado.httpserver.HTTPServer(app)
@@ -215,9 +231,33 @@ def start_http_invoke():
 def init_mesh():
     _thread.start_new_thread(start_http_invoke, ())
 
+def shutdown_tornado():
+    time.sleep(1)
+    tornado.ioloop.IOLoop.current().stop()
+
+def shutdown():
+    if tornado.ioloop.IOLoop.current() != None:
+        shutdown_tornado()
+
+class MetricsHandler(RequestHandler):
+    def get(self, *args, **kwargs):
+        encoder, content_type = choose_encoder(self.request.headers.get('accept'))
+        self.set_header("Content-Type", content_type)
+        self.write("# HELP qps the number of requests\n")
+        self.write("# TYPE qps counter\n")
+        self.write("qps " + str(self.application.qps) + "\n")
+        self.write("# EOF\n")
+        self.flush()
+        self.finish()
 
 class InvokeHandler(RequestHandler):
     def get(self, *args, **kwargs):
+        try:
+            self.application.share_lock.acquire()
+            self.application.qps += 1
+            self.application.share_lock.release()
+        except Exception as e:
+            logging.info(e)
         logging.info("handle get, check information:" + str(self.application.mesh_config))
         mesh_config = self.application.mesh_config
         mesh_tracer = self.application.mesh_tracer
@@ -229,7 +269,8 @@ class InvokeHandler(RequestHandler):
         elif mesh_tracer != None :
             span = mesh_tracer.extract(Format.TEXT_MAP, trace_headers)
             localSpan = mesh_tracer.start_span("ChildSpan", child_of=span)
-        local_result = self.application.func.handler({})
+        data = tornado.escape.json_decode(self.request.body)
+        local_result = self.application.func.handler(data)
         logging.info("before callee:" + str(mesh_config))
         callee = get_callee(mesh_config)
         next_headers = {}
@@ -237,12 +278,24 @@ class InvokeHandler(RequestHandler):
             mesh_tracer.inject(span, Format.TEXT_MAP, next_headers)
         result = ""
         logging.info("get callee:"+ str(callee))
-        if callee != None :
+        if callee[0] != None :
             callee["headers"] = next_headers
             logging.info("callee:" + str(callee))
             result = get_data(callee, local_result)
-        else :
+        elif callee[1] == NONE:
             result = local_result
+        elif callee[1] == UNDEFIEND:
+            # retry here
+            retry_time = 50
+            for t in range(retry_time):
+                callee = callee = get_callee(mesh_config)
+                if callee[0] != None :
+                    callee["headers"] = next_headers
+                    logging.info("callee:" + str(callee))
+                    result = get_data(callee, local_result)
+                    break
+                else :
+                    time.sleep(0.05)
         if localSpan != None:
             localSpan.finish()
             span.finish()
@@ -258,7 +311,10 @@ class Application(tornado.web.Application):
         self.mesh_tracer = None
         _thread.start_new_thread(watch,(self.mesh_config,self.mesh_tracer))
         self.func = importlib.import_module('index')
+        self.share_lock = threading.Lock()
+        self.qps = 0
         handlers = [
             ("/invoke", InvokeHandler),
+            ("/metrics", MetricsHandler),
         ]
         super(Application, self).__init__(handlers)

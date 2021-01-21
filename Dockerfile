@@ -1,6 +1,6 @@
 FROM python:3.6
 
-RUN pip install requests protobuf grpcio==1.27.2 jaeger-client waiting tornado
+RUN pip install requests protobuf grpcio==1.27.2 jaeger-client waiting tornado prometheus-client
 
 ENV RUNTIME python3
 ENV FUNC_NAME ""

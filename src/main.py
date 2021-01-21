@@ -13,14 +13,16 @@ from importlib import reload
 import json
 from concurrent import futures
 import traceback
-
+import signal
 from container import container_pb2, container_pb2_grpc
 from worker import worker_pb2, worker_pb2_grpc
 
 import mesh
 
+server = None
+
 class ContainerSever(container_pb2_grpc.ContainerServicer):
-    def __init__(self):
+    def __init__(self, func=None):
         super().__init__()
         self.loadCodeLock = threading.Lock()
         self.funcName = os.environ['FUNC_NAME']
@@ -95,7 +97,6 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
                 self.funcName = request.funcName
                 os.environ['FUNC_NAME'] = request.funcName
                 os.environ['FC_FUNC_CODE_PATH'] = d
-                mesh.init_mesh()
                 return container_pb2.LoadCodeResponse(code=0)
             except RuntimeError as e:
                 print(e)
@@ -103,6 +104,23 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
 
     def Stop(self, request, context):
         return
+
+def LoadCode(url):
+    try:
+        r = requests.get(url)
+        d = tempfile.mkdtemp('', '', '/tmp')
+        with open(d + "/func", "wb") as code:
+            code.write(r.content)
+        zf = zipfile.ZipFile(d + "/func")
+        zf.extractall(path=d)
+        zf.close()
+        sys.path.append(d)
+        func = importlib.import_module('index')
+        # TODO: unlink the last directory
+        os.environ['FC_FUNC_CODE_PATH'] = d
+        return func
+    except RuntimeError as e:
+        print(e)
 
 def readAddr():
     with open('/etc/hosts') as hosts:
@@ -125,16 +143,30 @@ def registerToWorker():
     ))
 
 def serve():
+    global server
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    func = LoadCode(os.environ['CODE_URI'])
     container_pb2_grpc.add_ContainerServicer_to_server(
-    ContainerSever(), server)
+    ContainerSever(func), server)
     server.add_insecure_port('[::]:50051')
     server.start()
     # TODO: need wait_for_ready?
+    mesh.init_mesh()
     registerToWorker()
     server.wait_for_termination()
 
+def shutdown_grpc():
+    global server
+    if server != None:
+        server.stop(grace=1)
+
+def exit_gracefully(signum, frame):
+    logging.info("receive SIGTERM")
+    mesh.shutdown()
+    shutdown_grpc()
+    
 
 if __name__ == '__main__':
     logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+    signal.signal(signal.SIGTERM, exit_gracefully)
     serve()
