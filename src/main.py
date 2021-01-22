@@ -1,3 +1,4 @@
+import _thread
 import os
 import json
 import sys
@@ -9,15 +10,19 @@ import threading
 import tempfile
 import importlib.util
 from importlib import reload
-
+import json
 from concurrent import futures
-
+import traceback
+import signal
 from container import container_pb2, container_pb2_grpc
 from worker import worker_pb2, worker_pb2_grpc
 
+import mesh
+
+server = None
 
 class ContainerSever(container_pb2_grpc.ContainerServicer):
-    def __init__(self):
+    def __init__(self, func=None):
         super().__init__()
         self.loadCodeLock = threading.Lock()
         self.funcName = os.environ['FUNC_NAME']
@@ -31,18 +36,32 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
             elif self.funcName != request.funcName:
                 return container_pb2.InvokeResponse(code=2)
 
-            output = self.func.handler(request.payload)
+            payload = json.loads(request.payload.decode("utf-8"))  
+            # TODO: This is not the final version to import the code path
+            print("tmp path: " + self.d)
+            output = self.func.handler(payload)
+            
             if isinstance(output, bytes):
                 pass
             elif isinstance(output, str):
                 output = bytes(output, encoding='utf8')
+            elif isinstance(output, dict):
+                output = bytes(json.dumps(output), encoding='utf8')
             else:
                 return container_pb2.InvokeResponse(code=3)
+            print("output is: ")
+            print(output)
             return container_pb2.InvokeResponse(code=0, output=output)
         except Exception as e:
             logging.warn(e)
+            traceback.print_exc()
             return container_pb2.InvokeResponse(code=3)
-
+        
+        except ValueError as e:
+            logging.warn(e)
+            traceback.print_exc()
+            print("[DEBUG] get here")
+            return container_pb2.InvokeResponse(code=3)
     def SetEnvs(self, request, context):
         try:
             for env in request.env:
@@ -56,6 +75,7 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
         return container_pb2.SetEnvsResponse(code=0)
 
     def LoadCode(self, request, context):
+        print("[liu] start to load code")
         with self.loadCodeLock:
             try:
                 r = requests.get(request.url)
@@ -75,6 +95,8 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
                 # TODO: unlink the last directory
                 self.d = d
                 self.funcName = request.funcName
+                os.environ['FUNC_NAME'] = request.funcName
+                os.environ['FC_FUNC_CODE_PATH'] = d
                 return container_pb2.LoadCodeResponse(code=0)
             except RuntimeError as e:
                 print(e)
@@ -83,6 +105,22 @@ class ContainerSever(container_pb2_grpc.ContainerServicer):
     def Stop(self, request, context):
         return
 
+def LoadCode(url):
+    try:
+        r = requests.get(url)
+        d = tempfile.mkdtemp('', '', '/tmp')
+        with open(d + "/func", "wb") as code:
+            code.write(r.content)
+        zf = zipfile.ZipFile(d + "/func")
+        zf.extractall(path=d)
+        zf.close()
+        sys.path.append(d)
+        func = importlib.import_module('index')
+        # TODO: unlink the last directory
+        os.environ['FC_FUNC_CODE_PATH'] = d
+        return func
+    except RuntimeError as e:
+        print(e)
 
 def readAddr():
     with open('/etc/hosts') as hosts:
@@ -97,25 +135,38 @@ def registerToWorker():
     stub = worker_pb2_grpc.WorkerStub(channel)
     res = stub.Register(worker_pb2.RegisterRequest(
         id=readId(),
-        addr=readAddr() + ':50051',
+        addr=readAddr(),
         runtime=os.environ['RUNTIME'],
         funcName=os.environ['FUNC_NAME'],
         memory=int(os.environ['MEMORY']),
         disk=0,
     ))
 
-
 def serve():
+    global server
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    func = LoadCode(os.environ['CODE_URI'])
     container_pb2_grpc.add_ContainerServicer_to_server(
-        ContainerSever(), server)
+    ContainerSever(func), server)
     server.add_insecure_port('[::]:50051')
     server.start()
     # TODO: need wait_for_ready?
+    mesh.init_mesh()
     registerToWorker()
     server.wait_for_termination()
 
+def shutdown_grpc():
+    global server
+    if server != None:
+        server.stop(grace=1)
+
+def exit_gracefully(signum, frame):
+    logging.info("receive SIGTERM")
+    mesh.shutdown()
+    shutdown_grpc()
+    
 
 if __name__ == '__main__':
-    logging.basicConfig()
+    logging.basicConfig(stream=sys.stdout, level=logging.DEBUG)
+    signal.signal(signal.SIGTERM, exit_gracefully)
     serve()

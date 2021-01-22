@@ -1,0 +1,19 @@
+{
+   "info": {
+    "target" : "106.15.225.249:40041"
+  },
+  "trace": {
+    "config": {
+      "serviceName": "aliyun-tracing-test",
+      "reporter": {
+        "logSpans": true,
+        "agentHost": "106.15.225.249",
+        "agentPort": 6832
+      },
+      "sampler": {
+        "type": "const",
+        "param": 1.0
+      }
+    }
+  }
+}
